@@ -8,11 +8,20 @@ import "android.graphics.*"
 import "android.speech.tts.TextToSpeech"
 import "java.util.Locale"
 import "android.content.SharedPreferences"
+import "com.androlua.Http" -- Required for update
 
 math.randomseed(os.time())
 
--- Heading changed to Advance Ludo version 1.1
-activity.setTitle("Advance Ludo version 1.1")
+-- ===== CONFIGURATION & UPDATE SYSTEM =====
+local CURRENT_VERSION = "1.2"
+local VERSION_URL = "https://raw.githubusercontent.com/abdulraufamir559-prog/Advance-Ludo.-Mohsin-Ali./main/version.txt"
+local UPDATE_CODE_URL = "https://raw.githubusercontent.com/abdulraufamir559-prog/Advance-Ludo.-Mohsin-Ali./main/main.lua"
+local PLUGIN_PATH = "/storage/emulated/0/解说/Tools/Advance Ludo. Mohsin Ali. /main.lua"
+
+local updateInProgress = false
+local mainHandler = Handler(Looper.getMainLooper())
+
+activity.setTitle("Advance Ludo version " .. CURRENT_VERSION)
 
 -- ===== SAVE SYSTEM =====
 prefs = activity.getSharedPreferences("LudoProfile", Context.MODE_PRIVATE)
@@ -34,7 +43,73 @@ function speak(text)
   end
 end
 
--- ===== GAME DATA =====
+-- ===== UPDATE FUNCTIONS =====
+
+function trim(s)
+    return s and s:gsub("^%s*(.-)%s*$", "%1") or ""
+end
+
+function checkUpdate()
+    if updateInProgress then return end
+    
+    local timestamp = tostring(os.time())
+    Http.get(VERSION_URL .. "?t=" .. timestamp, function(code, response)
+        if code == 200 and response then
+            local onlineVersion = trim(response)
+            if onlineVersion ~= CURRENT_VERSION and onlineVersion ~= "" then
+                Http.get(UPDATE_CODE_URL .. "?t=" .. timestamp, function(code2, mainCode)
+                    if code2 == 200 and mainCode and trim(mainCode) ~= "" then
+                        mainHandler.post(Runnable({
+                            run = function()
+                                local updateAlertDlg = AlertDialog.Builder(activity)
+                                .setTitle("Update Available!")
+                                .setMessage("Naya version (" .. onlineVersion .. ") dastiab hai.\nKya aap abhi update karna chahte hain?")
+                                .setPositiveButton("Update Now", function()
+                                    performUpdate(mainCode, onlineVersion)
+                                end)
+                                .setNegativeButton("Later", nil)
+                                .show()
+                            end
+                        }))
+                    end
+                end)
+            end
+        end
+    end)
+end
+
+function performUpdate(mainCode, onlineVersion)
+    updateInProgress = true
+    local tempPath = PLUGIN_PATH .. ".temp"
+    
+    local f = io.open(tempPath, "w")
+    if f then
+        f:write(mainCode)
+        f:close()
+        
+        -- Old file remove aur rename
+        os.remove(PLUGIN_PATH)
+        if os.rename(tempPath, PLUGIN_PATH) then
+            updateInProgress = false
+            mainHandler.post(Runnable({
+                run = function()
+                    AlertDialog.Builder(activity)
+                    .setTitle("Success")
+                    .setMessage("App kamyabi se update ho gayi hai (v" .. onlineVersion .. ").")
+                    .setPositiveButton("Restart", function()
+                        activity.recreate() -- Restart the activity
+                    end)
+                    .show()
+                end
+            }))
+        else
+            updateInProgress = false
+            print("Update Failed: Path error")
+        end
+    end
+end
+
+-- ===== GAME DATA & LOGIC =====
 TOTAL_STEPS = 52
 SAFE_ZONES = {1,9,14,22,27,35,40,48}
 
@@ -51,7 +126,7 @@ robot  = {pieces={0,0,0,0}}
 currentTurn = "player"
 lastRoll = 0
 
--- ===== UI =====
+-- ===== UI SETUP =====
 layout = LinearLayout(activity)
 layout.setOrientation(1)
 
@@ -87,25 +162,21 @@ end
 
 activity.setContentView(layout)
 
--- ===== DEVELOPER SPLASH =====
+-- ===== GAME FLOW =====
+
 function showDeveloper()
   AlertDialog.Builder(activity)
   .setTitle("Developer")
-  .setMessage("Abdul Rao Amir") -- Updated developer name
+  .setMessage("Abdul Rao Amir")
   .setCancelable(false)
-  .setPositiveButton("Continue", DialogInterface.OnClickListener{
-    onClick=function()
+  .setPositiveButton("Continue", function()
       askUserName()
-    end
-  })
+  end)
   .show()
 end
 
--- ===== USER NAME (WITH SAVE) =====
 function askUserName()
-
   local savedName = prefs.getString("playerName", nil)
-
   if savedName ~= nil then
     player.name = savedName
     updateStatus()
@@ -116,46 +187,33 @@ function askUserName()
   edit.setHint("Enter your name")
 
   AlertDialog.Builder(activity)
-  .setTitle("Welcome to Advance Ludo version 1.1")
+  .setTitle("Welcome")
   .setView(edit)
   .setCancelable(false)
-  .setPositiveButton("OK", DialogInterface.OnClickListener{
-    onClick=function()
+  .setPositiveButton("OK", function()
       local name = edit.getText().toString()
       if name=="" then name="Player" end
-
       player.name = name
       editor.putString("playerName", name)
       editor.apply()
-
       updateStatus()
-    end
-  })
+  end)
   .show()
 end
 
--- ===== MODE SELECT =====
 function selectMode()
   local options = {"52 Numbers Mode","100 Numbers Mode"}
-
   AlertDialog.Builder(activity)
   .setTitle("Select Mode")
-  .setItems(options, DialogInterface.OnClickListener{
-    onClick=function(dialog,which)
-      if which==0 then
-        TOTAL_STEPS=52
-      else
-        TOTAL_STEPS=100
-      end
+  .setItems(options, function(dialog,which)
+      TOTAL_STEPS = (which==0) and 52 or 100
       speak("Mode selected. Total steps "..TOTAL_STEPS)
       resetBoard()
       rollBtn.setEnabled(true)
-    end
-  })
+  end)
   .show()
 end
 
--- ===== RESET =====
 function resetBoard()
   player.pieces={0,0,0,0}
   robot.pieces={0,0,0,0}
@@ -163,46 +221,31 @@ function resetBoard()
   updateStatus()
 end
 
--- ===== UPDATE STATUS =====
 function updateStatus()
   local txt="Your Pieces:\n"
-  for i=1,4 do
-    txt=txt.."P"..i..":"..player.pieces[i].."  "
-  end
+  for i=1,4 do txt=txt.."P"..i..":"..player.pieces[i].."  " end
   txt=txt.."\nRobot Pieces:\n"
-  for i=1,4 do
-    txt=txt.."R"..i..":"..robot.pieces[i].."  "
-  end
-
+  for i=1,4 do txt=txt.."R"..i..":"..robot.pieces[i].."  " end
   statusText.setText(txt)
   profileText.setText("Player: "..player.name.." | Level: "..player.level.." | Wins: "..player.wins.." | Kills: "..player.kills.." | Mode: "..TOTAL_STEPS)
 end
 
--- ===== CHECK WIN =====
 function checkWin(obj,name)
   local finished=0
-  for i=1,4 do
-    if obj.pieces[i]==TOTAL_STEPS then finished=finished+1 end
-  end
-
+  for i=1,4 do if obj.pieces[i]==TOTAL_STEPS then finished=finished+1 end end
   if finished==4 then
     speak(name.." wins the game")
     rollBtn.setEnabled(false)
-    for i=1,4 do pieceButtons[i].setEnabled(false) end
-
     if name==player.name then
       player.wins=player.wins+1
       player.level=player.level+1
-      speak("Level Up! Now level "..player.level)
     end
-
     updateStatus()
     return true
   end
   return false
 end
 
--- ===== MOVE =====
 function movePiece(side,index,roll)
   local obj = (side=="player") and player or robot
   local enemy = (side=="player") and robot or player
@@ -219,69 +262,55 @@ function movePiece(side,index,roll)
   for i=1,4 do
     if enemy.pieces[i]==obj.pieces[index] and not isSafe(obj.pieces[index]) then
       enemy.pieces[i]=0
-      if side=="player" then
-        player.kills=player.kills+1
-      end
+      if side=="player" then player.kills=player.kills+1 end
       speak("Piece killed!")
     end
   end
-
   updateStatus()
   return true
 end
 
--- ===== ROBOT TURN =====
 function robotTurn()
   currentTurn="robot"
   local roll=math.random(1,6)
   diceText.setText("Robot rolled: "..roll)
   speak("Robot rolled "..roll)
-
-  for i=1,4 do
-    if movePiece("robot",i,roll) then break end
-  end
-
+  for i=1,4 do if movePiece("robot",i,roll) then break end end
   if checkWin(robot,"Robot") then return end
-
   if roll==6 then
-    Handler().postDelayed(robotTurn,800)
+    Handler().postDelayed(Runnable({run=robotTurn}), 800)
   else
     currentTurn="player"
     speak("Your turn")
   end
 end
 
--- ===== PLAYER ROLL =====
 rollBtn.onClick=function()
   if currentTurn~="player" then return end
-
   lastRoll=math.random(1,6)
   diceText.setText("You rolled: "..lastRoll)
   speak("You rolled "..lastRoll)
-
   for i=1,4 do
     pieceButtons[i].setEnabled(true)
-
     pieceButtons[i].onClick=function()
       if movePiece("player",i,lastRoll) then
         for j=1,4 do pieceButtons[j].setEnabled(false) end
-
         if checkWin(player,player.name) then return end
-
-        if lastRoll==6 then
-          speak("Roll again")
-        else
-          Handler().postDelayed(robotTurn,800)
-        end
+        if lastRoll==6 then speak("Roll again")
+        else Handler().postDelayed(Runnable({run=robotTurn}), 800) end
       end
     end
   end
 end
 
--- ===== BUTTON =====
-startBtn.onClick=function()
-  selectMode()
-end
+startBtn.onClick=function() selectMode() end
 
--- Start initialization
+-- ===== STARTUP =====
 showDeveloper()
+
+-- Check for updates after 2 seconds of launch
+mainHandler.postDelayed(Runnable({
+    run = function()
+        checkUpdate()
+    end
+}), 2000)
